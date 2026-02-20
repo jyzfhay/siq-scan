@@ -1,7 +1,7 @@
 """SAST scanner — pattern-based analysis across Python, JS/TS, Go, Ruby, Java, PHP."""
 import re
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import List, Set
 
 from core.models import Finding, Severity
 
@@ -279,6 +279,9 @@ _SKIP_DIRS: Set[str] = {
     "vendor", "third_party", ".tox", "site-packages", ".next",
 }
 
+# Files that define SAST rules — skip to avoid self-detection (eval, exec, yaml, etc.)
+_SAST_SKIP_FILES: Set[str] = {"scanners/sast.py"}
+
 # Lines beginning with these tokens are likely comments — skip to reduce noise
 _COMMENT_PREFIXES = ("#", "//", "/*", "*", "<!--", "--", ";")
 
@@ -293,6 +296,8 @@ def scan(path: str, progress_callback=None) -> List[Finding]:
     findings: List[Finding] = []
 
     for file_path in _iter_files(root):
+        if any(skip in str(file_path) for skip in _SAST_SKIP_FILES):
+            continue
         file_findings = _scan_file(file_path)
         if file_findings:
             findings.extend(file_findings)

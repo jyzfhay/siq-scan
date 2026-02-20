@@ -6,3 +6,5 @@ tomli>=2.0; python_version < "3.11"
 # Web interface dependencies
 flask>=3.0.0
 flask-cors>=4.0.0
+# Safe XML parsing (XXE prevention)
+defusedxml>=0.7.0

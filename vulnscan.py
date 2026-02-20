@@ -129,8 +129,8 @@ def net(targets, ports, timeout, nse_scripts, output, fmt, verbose, tools):
 
     \b
     Examples:
-      vulnscan net 192.168.1.1
-      vulnscan net 10.0.0.0/24 --ports 22,80,443,3306,6379
+      vulnscan net 192.0.2.1
+      vulnscan net 198.51.100.0/24 --ports 22,80,443,3306,6379
     """
     from scanners import network
     from scanners import integrations

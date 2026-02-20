@@ -382,11 +382,11 @@ def run_nmap(
 
 
 def _parse_nmap_xml(xml_output: str) -> List[Finding]:
-    """Parse Nmap XML output into Finding objects."""
+    """Parse Nmap XML output into Finding objects. Uses defusedxml to prevent XXE."""
     findings: List[Finding] = []
     try:
-        import xml.etree.ElementTree as ET
-        root = ET.fromstring(xml_output)
+        from defusedxml.ElementTree import fromstring as safe_fromstring
+        root = safe_fromstring(xml_output)
     except Exception:
         return []
 
