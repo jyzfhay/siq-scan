@@ -390,6 +390,42 @@ main {
     letter-spacing: -0.01em;
 }
 
+.filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--spacing-3);
+    margin-bottom: var(--spacing-6);
+    padding: var(--spacing-3) 0;
+    border-bottom: 1px solid var(--border);
+}
+.filter-bar .filter-label {
+    font-size: 12px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-right: var(--spacing-2);
+}
+.filter-bar .filter-btn {
+    padding: 6px 12px;
+    border-radius: 9999px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.2s, color 0.2s;
+}
+.filter-bar .filter-btn:hover {
+    background: var(--border);
+    color: var(--foreground);
+}
+.filter-bar .filter-btn.active {
+    background: var(--accent);
+    color: var(--background);
+    border-color: var(--accent);
+}
+
 /* Stats */
 .stats-grid {
     display: grid;

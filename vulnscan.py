@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """VulnScan — CVE-validated vulnerability scanner (OSV · NVD · MITRE)"""
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,8 @@ import click  # noqa: E402
 from rich.console import Console  # noqa: E402
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn  # noqa: E402
 
-from core.models import Finding  # noqa: E402
+from core.models import Finding, Severity  # noqa: E402
+from core import baseline as baseline_module  # noqa: E402
 from reporters import console as con_reporter  # noqa: E402
 from reporters import report as rep  # noqa: E402
 
@@ -40,15 +42,49 @@ _output_option = click.option(
 )
 _format_option = click.option(
     "--format", "-f", "fmt",
-    type=click.Choice(["html", "json", "both"], case_sensitive=False),
+    type=click.Choice(["html", "json", "sarif", "csv", "md", "sbom", "both"], case_sensitive=False),
     default="both", show_default=True,
-    help="Report format",
+    help="Report format: html, json, sarif, csv, md, sbom, or both (html+json)",
 )
 _verbose_option = click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 _tools_option = click.option(
     "--tools", "-T", default="auto", show_default=True,
     help="External tools: auto, all, none, or comma-separated (semgrep,bandit,trivy,nmap,nuclei)",
 )
+_baseline_option = click.option(
+    "--baseline", "-b", "baseline_path", default=None,
+    help="JSON file with suppressions to exclude known findings (see README).",
+)
+_fail_on_option = click.option(
+    "--fail-on", default=None, envvar="VULNSCAN_FAIL_SEVERITY",
+    help="Exit with code 1 if any finding has this severity or higher (e.g. CRITICAL or HIGH).",
+)
+
+
+def _fail_severity_set(fail_on: Optional[str]) -> set:
+    """Return set of Severity values that trigger exit(1). E.g. HIGH -> {CRITICAL, HIGH}."""
+    if not fail_on or not str(fail_on).strip():
+        return set()
+    order = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW, Severity.INFO, Severity.UNKNOWN]
+    names = [s.strip().upper() for s in str(fail_on).split(",") if s.strip()]
+    out = set()
+    for name in names:
+        for sev in order:
+            out.add(sev)
+            if sev.value == name:
+                break
+    return out
+
+
+def _should_fail(findings: List[Finding], fail_on: Optional[str]) -> bool:
+    """True if any finding has severity in the fail-on set."""
+    fail_set = _fail_severity_set(fail_on)
+    if not fail_set:
+        return False
+    for f in findings:
+        if f.worst_severity() in fail_set:
+            return True
+    return False
 
 
 @cli.command()
@@ -57,7 +93,9 @@ _tools_option = click.option(
 @_format_option
 @_verbose_option
 @_tools_option
-def deps(path: str, output: str, fmt: str, verbose: bool, tools: str):
+@_baseline_option
+@_fail_on_option
+def deps(path: str, output: str, fmt: str, verbose: bool, tools: str, baseline_path: Optional[str], fail_on: Optional[str]):
     """Scan project dependencies for known CVEs via OSV + NVD."""
     from scanners import dependency
     from scanners import integrations
@@ -74,7 +112,12 @@ def deps(path: str, output: str, fmt: str, verbose: bool, tools: str):
         with _spinner("Running trivy…"):
             findings += integrations.run_trivy(path, scan_type="fs")
 
-    _report(findings, output, fmt, path, verbose)
+    if baseline_path:
+        findings = baseline_module.apply_baseline(findings, baseline_path)
+    packages = dependency.get_packages(path) if fmt == "sbom" else None
+    _report(findings, output, fmt, path, verbose, packages=packages)
+    if _should_fail(findings, fail_on):
+        sys.exit(1)
 
 
 @cli.command()
@@ -83,7 +126,9 @@ def deps(path: str, output: str, fmt: str, verbose: bool, tools: str):
 @_format_option
 @_verbose_option
 @_tools_option
-def sast(path: str, output: str, fmt: str, verbose: bool, tools: str):
+@_baseline_option
+@_fail_on_option
+def sast(path: str, output: str, fmt: str, verbose: bool, tools: str, baseline_path: Optional[str], fail_on: Optional[str]):
     """Run static analysis for security anti-patterns."""
     from scanners import sast as sast_scanner
     from scanners import integrations
@@ -106,7 +151,11 @@ def sast(path: str, output: str, fmt: str, verbose: bool, tools: str):
         with _spinner("Running bandit…"):
             findings += integrations.run_bandit(path)
 
+    if baseline_path:
+        findings = baseline_module.apply_baseline(findings, baseline_path)
     _report(findings, output, fmt, path, verbose)
+    if _should_fail(findings, fail_on):
+        sys.exit(1)
 
 
 @cli.command()
@@ -119,7 +168,9 @@ def sast(path: str, output: str, fmt: str, verbose: bool, tools: str):
 @_format_option
 @_verbose_option
 @_tools_option
-def net(targets, ports, timeout, nse_scripts, output, fmt, verbose, tools):
+@_baseline_option
+@_fail_on_option
+def net(targets, ports, timeout, nse_scripts, output, fmt, verbose, tools, baseline_path, fail_on):
     """
     Scan network targets for open ports and misconfigurations.
 
@@ -165,7 +216,11 @@ def net(targets, ports, timeout, nse_scripts, output, fmt, verbose, tools):
             http_targets = [t if t.startswith("http") else f"http://{t}" for t in targets]
             findings += integrations.run_nuclei(http_targets)
 
+    if baseline_path:
+        findings = baseline_module.apply_baseline(findings, baseline_path)
     _report(findings, output, fmt, ", ".join(targets), verbose)
+    if _should_fail(findings, fail_on):
+        sys.exit(1)
 
 
 @cli.command("all")
@@ -177,8 +232,10 @@ def net(targets, ports, timeout, nse_scripts, output, fmt, verbose, tools):
 @_format_option
 @_verbose_option
 @_tools_option
+@_baseline_option
+@_fail_on_option
 def all_scan(path: str, net_targets: Optional[str], ports: Optional[str],
-             output: str, fmt: str, verbose: bool, tools: str):
+             output: str, fmt: str, verbose: bool, tools: str, baseline_path: Optional[str], fail_on: Optional[str]):
     """Run all scanners: dependencies, SAST, and optionally network."""
     from scanners import dependency, sast as sast_scanner, network
     from scanners import integrations
@@ -238,7 +295,63 @@ def all_scan(path: str, net_targets: Optional[str], ports: Optional[str],
                 all_findings += integrations.run_nuclei(http_targets)
         console.print(f"  [dim]→ {len(all_findings) - net_start} findings[/dim]")
 
-    _report(all_findings, output, fmt, path, verbose)
+    if baseline_path:
+        all_findings = baseline_module.apply_baseline(all_findings, baseline_path)
+    packages = dependency.get_packages(path) if fmt == "sbom" else None
+    _report(all_findings, output, fmt, path, verbose, packages=packages)
+    if _should_fail(all_findings, fail_on):
+        sys.exit(1)
+
+
+@cli.command("diff")
+@click.argument("report_a", type=click.Path(exists=True), metavar="BASELINE_REPORT.json")
+@click.argument("report_b", type=click.Path(exists=True), metavar="CURRENT_REPORT.json")
+@click.option("--format", "-f", "fmt", type=click.Choice(["text", "json"], case_sensitive=False), default="text",
+              help="Output format")
+def diff_reports(report_a: str, report_b: str, fmt: str):
+    """Compare two VulnScan JSON reports (e.g. baseline vs current). Shows new, fixed, and unchanged counts."""
+    data_a = json.loads(Path(report_a).read_text(encoding="utf-8"))
+    data_b = json.loads(Path(report_b).read_text(encoding="utf-8"))
+    findings_a = data_a.get("findings") or []
+    findings_b = data_b.get("findings") or []
+
+    def fp(f: dict) -> str:
+        return "{}|{}|{}|{}".format(
+            f.get("scanner", ""),
+            f.get("title", ""),
+            f.get("location", ""),
+            f.get("line_number") or 0,
+        )
+    set_a = {fp(f) for f in findings_a}
+    set_b = {fp(f) for f in findings_b}
+    new_fps = set_b - set_a
+    fixed_fps = set_a - set_b
+    new_findings = [f for f in findings_b if fp(f) in new_fps]
+    fixed_findings = [f for f in findings_a if fp(f) in fixed_fps]
+
+    if fmt == "json":
+        out = {
+            "baseline": report_a,
+            "current": report_b,
+            "new_count": len(new_findings),
+            "fixed_count": len(fixed_findings),
+            "unchanged_count": len(set_a & set_b),
+            "new": new_findings,
+            "fixed": fixed_findings,
+        }
+        click.echo(json.dumps(out, indent=2))
+        return
+    console.print(f"\n[bold]Diff:[/bold] [cyan]{report_a}[/cyan] vs [cyan]{report_b}[/cyan]\n")
+    console.print(f"  New:     [red]{len(new_findings)}[/red]")
+    console.print(f"  Fixed:   [green]{len(fixed_findings)}[/green]")
+    console.print(f"  Unchanged: {len(set_a & set_b)}")
+    if new_findings:
+        console.print("\n[bold]New findings:[/bold]")
+        for f in new_findings[:20]:
+            console.print(f"  [{f.get('severity', '?')}] {f.get('title', '')[:60]} @ {f.get('location', '')[:50]}")
+        if len(new_findings) > 20:
+            console.print(f"  ... and {len(new_findings) - 20} more")
+    console.print()
 
 
 @cli.command()
@@ -429,7 +542,8 @@ def _parse_timeout(timeout_value: Any) -> float:
         raise click.ClickException("timeout must be a positive number.") from exc
     if timeout <= 0:
         raise click.ClickException("timeout must be greater than 0.")
-    return timeout
+    # Cap at 10 minutes for agent/API to avoid runaway scans
+    return min(timeout, 600.0)
 
 
 def _parse_agent_targets(raw_targets: Any, field_name: str, required: bool = False) -> List[str]:
@@ -499,7 +613,30 @@ def _parse_ports_value(raw_ports: Any) -> Tuple[Optional[List[int]], Optional[st
     return ports, ",".join(str(p) for p in ports)
 
 
-def _report(findings: List[Finding], output: str, fmt: str, target: str, verbose: bool) -> None:
+def _webhook_notify(findings: List[Finding], target: str) -> None:
+    """If VULNSCAN_WEBHOOK_URL is set, POST scan summary (non-blocking best-effort)."""
+    import urllib.request
+    url = os.environ.get("VULNSCAN_WEBHOOK_URL")
+    if not url or not url.strip():
+        return
+    counts = {}
+    for f in findings:
+        counts[f.worst_severity().value] = counts.get(f.worst_severity().value, 0) + 1
+    payload = json.dumps({
+        "source": "vulnscan",
+        "scan_target": target,
+        "total_findings": len(findings),
+        "severity_counts": counts,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }).encode("utf-8")
+    try:
+        req = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10)
+    except Exception:
+        pass  # Best-effort; don't fail the scan
+
+
+def _report(findings: List[Finding], output: str, fmt: str, target: str, verbose: bool, packages: Optional[List[dict]] = None) -> None:
     if findings:
         con_reporter.print_findings(findings, verbose=verbose)
     else:
@@ -511,11 +648,20 @@ def _report(findings: List[Finding], output: str, fmt: str, target: str, verbose
         saved.append(rep.save_json(findings, str(out / "vulnscan-report.json")))
     if fmt in ("html", "both"):
         saved.append(rep.save_html(findings, str(out / "vulnscan-report.html"), scan_target=target))
+    if fmt == "sarif":
+        saved.append(rep.save_sarif(findings, str(out / "vulnscan-report.sarif")))
+    if fmt == "csv":
+        saved.append(rep.save_csv(findings, str(out / "vulnscan-report.csv")))
+    if fmt == "md":
+        saved.append(rep.save_md(findings, str(out / "vulnscan-report.md"), scan_target=target))
+    if fmt == "sbom" and packages is not None:
+        saved.append(rep.save_sbom(packages, str(out / "vulnscan-sbom.json")))
     if saved:
         console.print("\n[bold]Reports:[/bold]")
         for p in saved:
             console.print(f"  [cyan]{p}[/cyan]")
         console.print()
+    _webhook_notify(findings, target)
 
 
 class _spinner:

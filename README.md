@@ -134,11 +134,15 @@ curl -X POST http://localhost:8080/api/scan \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--output` / `-o` | `./vulnscan-report` | Report output directory |
-| `--format` / `-f` | `both` | `html`, `json`, or `both` |
+| `--format` / `-f` | `both` | `html`, `json`, `sarif`, `csv`, `md`, `sbom`, or `both` (html+json). Use `sarif` for GitHub Code Scanning / GitLab SAST; `sbom` for CycloneDX (deps/all only). |
+| `--baseline` / `-b` | — | JSON file with `suppressions` to exclude known findings (title/location/scanner or fingerprint). |
+| `--fail-on` | — | Exit with code 1 if any finding has this severity or higher (e.g. `CRITICAL` or `HIGH`). See `VULNSCAN_FAIL_SEVERITY`. |
 | `--verbose` / `-v` | off | Show all findings in detail |
 | `--ports` / `-p` | common | Comma-separated port list for network scan |
 | `--timeout` / `-t` | `1.5` | Per-port TCP timeout (seconds) |
 | `--no-banner` | off | Disable startup banner (useful for automation) |
+
+**Compare two reports:** `vulnscan diff baseline-report.json current-report.json` (outputs new/fixed/unchanged). Use `-f json` for machine-readable diff.
 
 Global options (e.g. `--no-banner`) must come before the subcommand:  
 `python vulnscan.py --no-banner deps .`.
@@ -149,6 +153,34 @@ Global options (e.g. `--no-banner`) must come before the subcommand:
 |----------|---------|
 | `NVD_API_KEY` | NVD API key — higher rate limit (5 → 50 req/30s). [Request one](https://nvd.nist.gov/developers/request-an-api-key). |
 | `PORT` | Port for the web server (default: 8080). |
+| `VULNSCAN_API_KEY` | If set, `POST /api/scan` requires header `X-API-Key: <key>` or `Authorization: Bearer <key>`. |
+| `VULNSCAN_MAX_TIMEOUT` | Max scan timeout in seconds (default: 300). |
+| `VULNSCAN_MAX_REQUEST_BODY` | Max API request body size in bytes (default: 65536). |
+| `VULNSCAN_FAIL_SEVERITY` | Exit code 1 if any finding has this severity or higher (e.g. `CRITICAL`, `HIGH`). |
+| `VULNSCAN_WEBHOOK_URL` | After each scan (CLI or API), POST a JSON summary here (e.g. Slack/Discord webhook). |
+| `VULNSCAN_RATE_LIMIT_N` | Max API requests per window (default: 10). |
+| `VULNSCAN_RATE_LIMIT_WINDOW` | Rate limit window in seconds (default: 60). |
+| `VULNSCAN_AUDIT_LOG` | If set, append each scan request (timestamp, path, count) to this file. |
+| `VULNSCAN_MAX_CONCURRENT_SCANS` | Max concurrent API scans (default: 2); 503 when full. |
+| `VULNSCAN_HEALTH_CHECK_NETWORK` | If set to `true`, `/api/health` checks NVD/OSV reachability. |
+
+### Baseline file (suppressions)
+
+Use `--baseline path/to/baseline.json` to exclude known findings. The file is JSON with a `suppressions` array. Each entry can be:
+
+- **By fields:** `{"title": "...", "location": "...", "scanner": "dependency"}` — all provided fields must match.
+- **By fingerprint:** add fingerprints from a previous run (e.g. from `vulnscan diff --format json` or your own `scanner|title|location|line` string).
+
+Example:
+
+```json
+{
+  "suppressions": [
+    { "title": "Vulnerable dependency: foo 1.0", "location": "foo==1.0 (PyPI)" },
+    { "fingerprint": "sast|Use of eval|app/main.py|42" }
+  ]
+}
+```
 
 ## Data sources
 
@@ -179,14 +211,10 @@ python vulnscan.py deps . --format json --output ./vulnscan-report --no-banner
 # or:  python vulnscan.py all . --format json --output ./vulnscan-report --no-banner
 
 # Fail the build if any CRITICAL or HIGH findings
-python - <<'EOF'
-import json, sys
-with open("./vulnscan-report/vulnscan-report.json") as f:
-    data = json.load(f)
-count = sum(1 for f in data.get("findings", []) if f.get("severity") in ("CRITICAL", "HIGH"))
-sys.exit(1 if count > 0 else 0)
-EOF
+python vulnscan.py all . --format json -o ./vulnscan-report --fail-on HIGH
 ```
+
+A ready-made **GitHub Actions workflow** is in `.github/workflows/vulnscan.yml`: it runs VulnScan on push/PR, uploads the report artifact and SARIF for the Security tab. Set repo variable `VULNSCAN_FAIL_SEVERITY` to `CRITICAL` or `HIGH` to fail the job when findings meet that threshold.
 
 Optional: set `NVD_API_KEY` in your CI secrets for a higher NVD rate limit.
 

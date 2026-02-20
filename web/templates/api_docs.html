@@ -15,6 +15,7 @@
         <div class="api-intro">
             <p>VulnScan provides a RESTful API for programmatic access. All endpoints return JSON and support standard HTTP methods.</p>
             <p><strong>Base URL:</strong> <code class="api-endpoint">{{ request.url_root }}api</code></p>
+            <p><strong>Authentication (optional):</strong> If the server sets <code>VULNSCAN_API_KEY</code>, <code>POST /api/scan</code> requires either the <code>X-API-Key</code> header or <code>Authorization: Bearer &lt;key&gt;</code>. Paths are restricted to the server root; timeout is capped by <code>VULNSCAN_MAX_TIMEOUT</code> (default 300s).</p>
         </div>
 
         <div class="api-endpoint-section">

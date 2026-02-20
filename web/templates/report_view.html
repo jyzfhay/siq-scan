@@ -21,6 +21,20 @@
         </div>
 
         <div id="stats-container"></div>
+        <div id="filter-bar" class="filter-bar" style="display: none;">
+            <span class="filter-label">Severity:</span>
+            <button type="button" class="filter-btn active" data-filter="severity" data-value="">All</button>
+            <button type="button" class="filter-btn" data-filter="severity" data-value="CRITICAL">Critical</button>
+            <button type="button" class="filter-btn" data-filter="severity" data-value="HIGH">High</button>
+            <button type="button" class="filter-btn" data-filter="severity" data-value="MEDIUM">Medium</button>
+            <button type="button" class="filter-btn" data-filter="severity" data-value="LOW">Low</button>
+            <button type="button" class="filter-btn" data-filter="severity" data-value="INFO">Info</button>
+            <span class="filter-label">Scanner:</span>
+            <button type="button" class="filter-btn active" data-filter="scanner" data-value="">All</button>
+            <button type="button" class="filter-btn" data-filter="scanner" data-value="dependency">Dependency</button>
+            <button type="button" class="filter-btn" data-filter="scanner" data-value="sast">SAST</button>
+            <button type="button" class="filter-btn" data-filter="scanner" data-value="network">Network</button>
+        </div>
         <div id="findings-container"></div>
     </div>
 </main>

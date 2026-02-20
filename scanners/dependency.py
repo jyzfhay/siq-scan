@@ -21,6 +21,23 @@ _SKIP_DIRS = {
 }
 
 
+def get_packages(path: str) -> List[dict]:
+    """Return list of packages as dicts for SBOM: [{"name", "version", "ecosystem"}, ...]."""
+    root = Path(path)
+    packages: List[Package] = []
+    for manifest in _find_manifests(root):
+        packages.extend(_parse_manifest(manifest))
+    seen = set()
+    out = []
+    for name, version, ecosystem in sorted(set(packages)):
+        key = (name, version, ecosystem)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "version": version, "ecosystem": ecosystem})
+    return out
+
+
 def scan(path: str, progress_callback=None) -> List[Finding]:
     root = Path(path)
     packages: List[Package] = []

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from collections import Counter
 
-from core.models import Finding, Severity
+from core.models import Finding
 
 _SEV_COLORS_HEX = {
     "CRITICAL": "#dc2626",
@@ -326,3 +326,170 @@ def _esc(text: Optional[str]) -> str:
             .replace(">", "&gt;")
             .replace('"', "&quot;")
     )
+
+
+# ---------------------------------------------------------------------------
+# SARIF 2.1 export (GitHub Code Scanning, GitLab SAST, etc.)
+# ---------------------------------------------------------------------------
+
+def build_sarif(findings: List[Finding], generated_at: Optional[str] = None) -> dict:
+    """Build a SARIF 2.1.0 log for integration with GitHub Code Scanning and GitLab SAST."""
+    from datetime import datetime
+    ts = generated_at or datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    rules_seen: dict = {}
+    results = []
+    for f in _sorted_findings(findings):
+        rule_id = (f.scanner + "/" + (f.title or "finding")).replace(" ", "-")[:100]
+        if rule_id not in rules_seen:
+            rules_seen[rule_id] = {
+                "id": rule_id,
+                "name": f.title or "Finding",
+                "shortDescription": {"text": (f.title or "Finding")[:200]},
+                "fullDescription": {"text": (f.description or "")[:1000]},
+                "defaultConfiguration": {"level": _severity_to_sarif_level(f.worst_severity().value)},
+                "help": {"text": f.remediation or f.description or ""},
+            }
+        result = {
+            "ruleId": rule_id,
+            "level": _severity_to_sarif_level(f.worst_severity().value),
+            "message": {"text": (f.title or "") + ": " + ((f.description or "")[:300])},
+        }
+        loc = {"uri": f.location or "file", "uriBaseId": "%SRCROOT%"}
+        if f.line_number:
+            loc["region"] = {"startLine": f.line_number}
+        result["locations"] = [{"physicalLocation": loc}]
+        results.append(result)
+    rules = []
+    for r in rules_seen.values():
+        rule = {
+            "id": r["id"],
+            "name": r["name"],
+            "shortDescription": r["shortDescription"],
+            "fullDescription": r["fullDescription"],
+            "defaultConfiguration": r["defaultConfiguration"],
+            "help": r["help"],
+        }
+        rules.append(rule)
+    return {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "VulnScan",
+                    "version": "1.0.0",
+                    "informationUri": "https://github.com/your-org/o-vuln",
+                    "rules": rules,
+                }
+            },
+            "results": results,
+            "invocations": [{"executionSuccessful": True, "endTimeUtc": ts}],
+        }]
+    }
+
+
+def _severity_to_sarif_level(severity: str) -> str:
+    return {"CRITICAL": "error", "HIGH": "error", "MEDIUM": "warning", "LOW": "warning", "INFO": "note", "UNKNOWN": "none"}.get(severity, "none")
+
+
+def save_sarif(findings: List[Finding], output_path: str, generated_at: Optional[str] = None) -> str:
+    """Write SARIF 2.1 to a file. Use for GitHub Code Scanning / GitLab SAST."""
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sarif = build_sarif(findings, generated_at=generated_at)
+    path.write_text(json.dumps(sarif, indent=2))
+    return str(path)
+
+
+# ---------------------------------------------------------------------------
+# CSV and Markdown export
+# ---------------------------------------------------------------------------
+
+def save_csv(findings: List[Finding], output_path: str) -> str:
+    """Write findings to a CSV file."""
+    import csv
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["Severity", "Scanner", "Title", "Location", "Line", "Description", "Remediation", "CVE IDs"])
+        for fnd in _sorted_findings(findings):
+            cve_ids = ",".join(r.cve_id for r in fnd.cve_refs) if fnd.cve_refs else ""
+            w.writerow([
+                fnd.worst_severity().value,
+                fnd.scanner,
+                fnd.title or "",
+                fnd.location or "",
+                fnd.line_number or "",
+                (fnd.description or "")[:500],
+                (fnd.remediation or "")[:300],
+                cve_ids,
+            ])
+    return str(path)
+
+
+def save_md(findings: List[Finding], output_path: str, scan_target: str = "") -> str:
+    """Write findings to a Markdown file."""
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# VulnScan Report",
+        "",
+        f"**Generated:** {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC",
+        f"**Target:** {scan_target or '.'}",
+        f"**Total findings:** {len(findings)}",
+        "",
+        "| Severity | Scanner | Title | Location |",
+        "|----------|---------|-------|----------|",
+    ]
+    for fnd in _sorted_findings(findings):
+        sev = fnd.worst_severity().value
+        loc = (fnd.location or "") + (f":{fnd.line_number}" if fnd.line_number else "")
+        title = (fnd.title or "").replace("|", "\\|")
+        lines.append(f"| {sev} | {fnd.scanner} | {title[:80]} | {loc[:60]} |")
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return str(path)
+
+
+# ---------------------------------------------------------------------------
+# SBOM (CycloneDX 1.4)
+# ---------------------------------------------------------------------------
+
+def build_sbom_cyclonedx(packages: List[dict], generated_at: Optional[str] = None) -> dict:
+    """Build a minimal CycloneDX 1.4 JSON SBOM from a list of {name, version, ecosystem}."""
+    ts = generated_at or datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Map ecosystem to PURL type
+    purl_type = {"PyPI": "pypi", "npm": "npm", "crates.io": "cargo", "Go": "golang", "RubyGems": "gem"}
+    components = []
+    for p in packages:
+        name = p.get("name", "")
+        version = p.get("version", "")
+        ecosystem = p.get("ecosystem", "")
+        ptype = purl_type.get(ecosystem, "generic")
+        purl = f"pkg:{ptype}/{name}@{version}" if name and version else None
+        components.append({
+            "type": "library",
+            "name": name,
+            "version": version,
+            "purl": purl,
+            "description": f"{name} {version} ({ecosystem})" if ecosystem else None,
+        })
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.4",
+        "version": 1,
+        "metadata": {
+            "timestamp": ts,
+            "tools": [{"vendor": "VulnScan", "name": "vulnscan", "version": "1.0.0"}],
+        },
+        "components": components,
+    }
+
+
+def save_sbom(packages: List[dict], output_path: str, generated_at: Optional[str] = None) -> str:
+    """Write CycloneDX 1.4 JSON SBOM. Pass packages from scanners.dependency.get_packages(path)."""
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sbom = build_sbom_cyclonedx(packages, generated_at=generated_at)
+    path.write_text(json.dumps(sbom, indent=2), encoding="utf-8")
+    return str(path)
